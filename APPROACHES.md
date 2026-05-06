@@ -1,114 +1,149 @@
 # EK-100 Multi-Instance Retrieval — Approaches
 
 Competition: [Codabench EK-100 MIR](https://www.codabench.org/competitions/12008)  
-Task: Given a text query, rank 9 668 video segments (and vice versa) by relevance.  
+Task: Given a text query, rank 9,668 video segments (and vice versa) by relevance.  
 Primary metric: **nDCG AVG** (average of video→text and text→video nDCG).
 
 ---
 
 ## Iteration Summary
 
-| # | Approach | nDCG AVG |
+| # | Approach | nDCG AVG (Codabench) |
 |---|---|---|
 | 1 | JPoSE Base | **53.53** |
 | 2 | JPoSE Ensemble (no re-ranking) | **55.31** |
 | 3 | JPoSE Ensemble + Re-ranking | **55.82** |
-| 4 | AVION ViT-L + SMS Loss (10 ep, no inference flags) | **68.80** |
+| 4 | AVION ViT-L + SMS Loss (10 ep, standard inference) | **68.80** |
 | 5 | AVION ViT-L + SMS Loss (10 ep, flip + clip-length 32) | **69.48** |
 | 6 | AVION ViT-L + SMS Loss (16 ep, flip + clip-length 32) | **69.68** |
+
+Iterations 2–3 correspond to **Approach 2**. Iterations 4–6 correspond to **Approach 3**.
 
 ---
 
 ## Approach 1 — JPoSE Base
 
+*Covers iteration 1.*
+
 ### Strategy
 
-Runs inference with the pre-trained **JPoSE** (Joint Part-of-Speech Embeddings) model. JPoSE embeds video clips and text queries into a shared space decomposed by grammatical role: verb, noun, and action. At test time the three sub-embeddings are concatenated (`comb-func = cat`) to produce a joint representation, and cosine similarity between all video–text pairs is computed to produce the final similarity matrix.
+Runs inference with the pre-trained **JPoSE** (Joint Part-of-Speech Embeddings) model on the EK-100 retrieval test set. JPoSE embeds video clips and text queries into a shared space decomposed by grammatical role: verb, noun, and action. At test time, the three sub-embeddings are concatenated (`comb-func = cat`) to form a joint representation, and cosine similarity between all video–text pairs produces the final 9668 × 3842 similarity matrix.
 
-No training is done. Only the best released checkpoint (`JPoSE_BEST`) is used.
+No fine-tuning is performed. Only the best released checkpoint (`JPoSE_BEST`) is used.
 
-### Notebooks
+### Notebooks (run in order)
 
 | Notebook | Purpose |
 |---|---|
-| `src/jpose_base/jpose_base_data.ipynb` | Downloads `JPoSE_data.zip` (~1.64 GB) and the EPIC-100 retrieval annotations to Google Drive |
-| `src/jpose_base/jpose_base.ipynb` | Extracts data, patches PyTorch compatibility, runs JPoSE inference, and packages the submission ZIP |
+| `src/jpose_base/jpose_base_data.ipynb` | Downloads `JPoSE_data.zip` (~1.64 GB) and EPIC-100 retrieval annotation files to Google Drive |
+| `src/jpose_base/jpose_base.ipynb` | Extracts data, applies PyTorch compatibility patches, runs JPoSE inference, and packages the Codabench submission ZIP |
 
 ### Data & Models
 
-- **JPoSE repo**: `Joint-Part-of-Speech-Embeddings` (cloned from GitHub)
-- **Checkpoint**: `JPoSE_BEST/model/EPIC_100_retrieval_JPoSE_BEST.pth`
-- **Features**: pre-extracted video features and text features included in `JPoSE_data.zip`
+| Item | Size | Source |
+|---|---|---|
+| `JPoSE_data.zip` | ~1.64 GB | Downloaded by `jpose_base_data.ipynb` from Dropbox |
+| `JPoSE_BEST` checkpoint | ~8 MB | Included in `JPoSE_data.zip` |
+| Pre-extracted video features | ~1,955 MB | Included in `JPoSE_data.zip` |
+| Pre-extracted text features | ~107 MB | Included in `JPoSE_data.zip` |
+| EPIC-100 annotation PKLs | ~12 MB | Downloaded by `jpose_base_data.ipynb` from EPIC-KITCHENS GitHub |
+
+All data is stored under `EK100_MIR/data/` on Google Drive.
+
+### Compatibility Patches Applied
+
+| File | Patch |
+|---|---|
+| All `*.py` in `Joint-Part-of-Speech-Embeddings/src/` | Regex-replace all `torch.load(…)` calls → `torch.load(…, weights_only=False)` to fix the PyTorch ≥ 2.0 `weights_only` default change |
 
 ### Files Generated
 
 | File | Location | Description |
 |---|---|---|
 | `JPoSE_BEST_test_latest.pkl` | `EK100_MIR/submissions/` | Raw similarity matrix (9668 × 3842, float32) with `vis_ids` and `txt_ids` |
-| `JPoSE_BEST_submission.zip` | `EK100_MIR/submission_zips/` | Codabench-compatible ZIP containing `test.pkl` |
+| `JPoSE_BEST_submission.zip` | `EK100_MIR/submission_zips/` | Codabench-compatible ZIP containing `test.pkl` (protocol-2 pickle, numpy compat patch applied) |
 
-### Result
+### Results
 
 | Metric | VT | TV | AVG |
 |---|---|---|---|
-| nDCG | 0.707 | 0.674 | **0.690** (train-set val) |
-| **Codabench nDCG** | — | — | **53.53** |
+| nDCG (train-set val) | 0.707 | 0.674 | **0.690** |
+| mAP (train-set val) | 0.757 | 0.712 | **0.734** |
+| **nDCG AVG (Codabench)** | — | — | **53.53** |
 
 ---
 
-## Approach 2 — JPoSE Ensemble
+## Approach 2 — JPoSE Ensemble + Re-ranking
+
+*Covers iterations 2 and 3.*
 
 ### Strategy
 
-Combines three independent retrieval models by averaging their normalized similarity matrices, with an optional diffusion-based re-ranking step applied on top.
+Combines three independent retrieval models into a single similarity matrix via score-level fusion, then optionally applies a graph-diffusion re-ranking step.
 
-**Step 1 — Independent inference** — three models are run separately, each producing a 9668 × 3842 similarity matrix:
+**Step 1 — Independent inference.** Three models are run separately, each producing a 9668 × 3842 similarity matrix:
 
-| Model | Architecture | Features |
-|---|---|---|
-| **JPoSE** | Part-of-Speech joint embedding, triplet loss | Pre-extracted video + text features |
-| **MI-MM** | Multi-Instance Multi-Modal matching | S3D HowTo100M video features |
-| **MLP / MMEN** | Multi-Modal Embedding Network, caption-based | Pre-extracted video + text features |
+| Model | Architecture | Training | Features |
+|---|---|---|---|
+| **JPoSE** | Part-of-Speech joint embedding, triplet loss | Pre-trained; no fine-tuning | Pre-extracted video + text features |
+| **MI-MM** | Multi-Instance Multi-Modal matching | Pre-trained; no fine-tuning | S3D HowTo100M video features |
+| **MLP / MMEN** | Multi-Modal Embedding Network, caption-based | Pre-trained; no fine-tuning | Pre-extracted video + text features |
 
-**Step 2 — Ensemble** — each matrix is min-max normalized row-wise to [0, 1], then averaged with equal weights (1/3 each):
-
-```
-sim_ensemble = (1/3) * norm(sim_mimm)
-             + (1/3) * norm(sim_jpose)
-             + (1/3) * norm(sim_mlp)
-```
-
-**Step 3 — Re-ranking (optional)** — a k-NN affinity diffusion step propagates scores through visual-visual and text-text neighborhood graphs:
-
-- For each query row, the top-k most similar videos form a visual affinity graph (`A_vv`).
-- For each text query, the same is done in text space (`A_tt`).
-- Both affinities are applied to the ensemble matrix and blended with the original scores:
+**Step 2 — Ensemble.** Each matrix is min-max normalized row-wise to [0, 1] (so models with different score scales contribute equally), then averaged with equal weights:
 
 ```
-sim_reranked = (1 - alpha) * sim_ensemble + alpha * 0.5 * (A_vv @ S + (A_tt @ S.T).T)
+sim_ensemble = (1/3) × normalize(sim_mimm)
+             + (1/3) × normalize(sim_jpose)
+             + (1/3) × normalize(sim_mlp)
 ```
 
-Default parameters: `k = 20`, `alpha = 0.3`.
+Weights can be tuned on a validation set if one is available; equal weights were used here.
 
-### Notebooks
+**Step 3 — Re-ranking (optional).** A k-NN affinity diffusion step propagates scores through visual-visual and text-text neighbourhood graphs:
+
+1. Each query's similarity row is L2-normalized; the top-k most similar videos form a sparse visual affinity matrix `A_vv`.
+2. The same is done transposed in text space to form `A_tt`.
+3. Expanded scores are computed as `S_exp = 0.5 × (A_vv @ S + (A_tt @ Sᵀ)ᵀ)`.
+4. The final re-ranked matrix blends the original and expanded scores:
+
+```
+sim_reranked = (1 − α) × sim_ensemble + α × S_exp
+```
+
+Default parameters: `k = 20`, `α = 0.3`.
+
+### Notebooks (run in order)
 
 | Notebook | Purpose |
 |---|---|
-| `src/jpose_ensemble/jpose_ensemble_data.ipynb` | Downloads `JPoSE_data.zip` (~1.64 GB), `MI-MM_data.zip` (~0.68 GB), and annotations to Google Drive |
-| `src/jpose_ensemble/jpose_ensemble.ipynb` | Extracts both datasets, patches compatibility issues, runs all three model inferences, computes ensemble and re-ranked matrices, and packages all submission ZIPs |
+| `src/jpose_ensemble/jpose_ensemble_data.ipynb` | Downloads `JPoSE_data.zip` (~1.64 GB), `MI-MM_data.zip` (~0.68 GB), and EPIC-100 annotation files to Google Drive |
+| `src/jpose_ensemble/jpose_ensemble.ipynb` | Extracts both datasets, applies compatibility patches, runs all three model inferences, computes the ensemble and re-ranked matrices, and packages all five submission ZIPs |
 
 ### Data & Models
 
-- **JPoSE repo**: `Joint-Part-of-Speech-Embeddings` (cloned from GitHub)
-- **MI-MM repo**: `MI-MM` (cloned from GitHub)
-- **JPoSE checkpoint**: `JPoSE_BEST/model/EPIC_100_retrieval_JPoSE_BEST.pth` (~8 MB)
-- **MLP checkpoint**: `MMEN_BEST/model/EPIC_100_retrieval_MLP_BEST.pth` (~4 MB)
-- **MI-MM checkpoint**: `MI-MM/data/models/` (~154 MB, best epoch 202)
-- **S3D features**: `MI-MM/data/features/` (~315 MB)
+| Item | Size | Source |
+|---|---|---|
+| `JPoSE_data.zip` | ~1.64 GB | Downloaded by `jpose_ensemble_data.ipynb` from Dropbox |
+| `MI-MM_data.zip` | ~0.68 GB | Downloaded by `jpose_ensemble_data.ipynb` from Dropbox |
+| `JPoSE_BEST` checkpoint | ~8 MB | Included in `JPoSE_data.zip` |
+| `MMEN_BEST` (MLP) checkpoint | ~4 MB | Included in `JPoSE_data.zip` |
+| MI-MM checkpoint (best epoch 202) | ~154 MB | Included in `MI-MM_data.zip` |
+| S3D HowTo100M features (MI-MM) | ~315 MB | Included in `MI-MM_data.zip` |
+| Pre-extracted JPoSE video features | ~1,955 MB | Included in `JPoSE_data.zip` |
+| Pre-extracted JPoSE text features | ~107 MB | Included in `JPoSE_data.zip` |
+
+### Compatibility Patches Applied
+
+| File | Patch |
+|---|---|
+| `MI-MM/src/loader/loader_features.py` | Replace `import pickle5 as pickle` → `import pickle` (pickle5 is built into Python 3.8+ stdlib) |
+| `MI-MM/src/testing.py` | Add `weights_only=False` to `th.load(…)` for PyTorch ≥ 2.0 compatibility |
+| `MI-MM/src/models/embedding_projection.py` | Add `weights_only=False` to `th.load(…)` for the S3D pretrain weights |
+| All `*.py` in `Joint-Part-of-Speech-Embeddings/src/` | Regex-replace all `torch.load(…)` → `torch.load(…, weights_only=False)` |
 
 ### Files Generated
 
-**Intermediate similarity matrices** (saved to `EK100_MIR/submissions/`):
+**Intermediate submission pickles** (saved to `EK100_MIR/submissions/`):
 
 | File | Model |
 |---|---|
@@ -120,89 +155,124 @@ Default parameters: `k = 20`, `alpha = 0.3`.
 
 | File | Contents |
 |---|---|
-| `ensemble_submission.zip` | Ensemble (no re-ranking) |
-| `reranked_submission.zip` | Ensemble + re-ranking |
+| `ensemble_submission.zip` | Ensemble of three models (no re-ranking) |
+| `reranked_submission.zip` | Ensemble + graph-diffusion re-ranking (k=20, α=0.3) |
 | `JPoSE_submission.zip` | JPoSE alone |
 | `MI-MM_submission.zip` | MI-MM alone |
 | `MLP_submission.zip` | MLP / MMEN alone |
+
+Each ZIP contains a single `test.pkl` serialized with pickle protocol 2 and a numpy namespace compatibility patch applied (required by the Codabench grader, which runs an older numpy).
 
 ### Results
 
 | Variant | nDCG AVG (Codabench) |
 |---|---|
-| Ensemble only | **55.31** |
-| Ensemble + re-ranking (k=20, α=0.3) | **55.82** |
+| Ensemble only (iteration 2) | **55.31** |
+| Ensemble + re-ranking, k=20, α=0.3 (iteration 3) | **55.82** |
+
+Re-ranking adds ~0.5 nDCG on top of the ensemble baseline. The re-ranked submission is always recommended.
 
 ---
 
-## Approach 4 — AVION ViT-L + SMS Loss
+## Approach 3 — AVION ViT-L Fine-tuned with SMS Loss
+
+*Covers iterations 4, 5, and 6.*
 
 ### Strategy
 
-Fine-tunes the **AVION** video-language model (CLIP ViT-L backbone pre-trained on Ego4D via LaViLa) with **SMS Loss** (Symmetric Multi-Similarity Loss) on the EPIC-KITCHENS-100 retrieval training set. SMS Loss uses the ground-truth relevancy matrix to pull together positive pairs and push apart negatives in proportion to their relevance scores, giving a more nuanced supervision signal than binary contrastive losses.
+Fine-tunes the **AVION** video-language model (CLIP ViT-L backbone pre-trained on Ego4D via LaViLa) with **SMS Loss** (Symmetric Multi-Similarity Loss) on the EPIC-KITCHENS-100 retrieval training set. SMS Loss uses the ground-truth soft relevancy matrix to pull together positive pairs and push apart negatives in proportion to their relevance scores, providing a more nuanced supervision signal than binary contrastive losses.
 
-**Step 1 — Base fine-tune** — the LaViLa ViT-L checkpoint is fine-tuned from scratch for 10 epochs using `ammplus_finetune.py` from the SMS-Loss repository:
+**Step 1 — Base fine-tuning.** The LaViLa ViT-L checkpoint is fine-tuned from scratch for 10 epochs using `ammplus_finetune.py` from the (patched) SMS-Loss repository:
 
 ```
 torchrun --nproc_per_node=1 scripts/ammplus_finetune.py
-  --model        CLIP_VITL14
-  --batch-size   48
-  --epochs       10
-  --lr           2e-5
-  --loss-margin  0.6
-  --loss-thres   0.1
+  --model           CLIP_VITL14
+  --batch-size      48
+  --epochs          10
+  --lr              2e-5
+  --loss-margin     0.6   # SMS margin (θ in the paper)
+  --loss-thres      0.1   # relevancy threshold; pairs below this are ignored
   --use-fast-conv1
-  --grad-checkpointing
+  --grad-checkpointing    # trades compute for VRAM; required for ViT-L on a single GPU
+  [--use-flash-attn]      # optional; halves attention memory, enabled when available
 ```
 
-**Step 2 — Continue fine-tune (optional)** — training is resumed from the epoch-10 checkpoint for additional epochs using `--resume` and `--start-epoch 10`.
+A numbered checkpoint `checkpoint_{epoch:04d}.pt` is saved after every epoch.
 
-**Step 3 — Inference** — `test_mir.py` runs a forward pass over all test video segments and text queries to produce the similarity matrix. Two inference settings were compared:
+**Step 2 — Resume fine-tuning (optional).** Training can be extended from any saved checkpoint by passing both `--pretrain-model` and `--resume` pointing to the same checkpoint, setting `--start-epoch` to the saved epoch, and increasing `--epochs` to the new target. This was used to continue from epoch 10 to epoch 16.
 
-| Setting | Flags |
-|---|---|
-| Standard | (none beyond required args) |
-| TTA | `--flip --clip-length 32` |
+**Step 3 — Inference.** `test_mir.py` encodes all test video segments and text queries, computes the full similarity matrix, and writes `submission.pkl`. Two inference settings were compared:
 
-`--flip` enables horizontal flip test-time augmentation (averages forward and flipped features). `--clip-length 32` increases the number of frames sampled per clip from the default (16) to 32, giving richer temporal context.
+| Setting | Flags | Effect |
+|---|---|---|
+| Standard | *(none)* | Single forward pass, default 8-frame clips |
+| TTA | `--flip --clip-length 32` | Averages forward + horizontally flipped features; samples 32 frames per clip for richer temporal context |
 
-### Notebook
+TTA adds ~0.7 nDCG at no training cost.
+
+### Notebooks (run in order)
 
 | Notebook | Purpose |
 |---|---|
-| `src/sms_avion/sms_avion.ipynb` | Installs dependencies, mounts Drive, downloads checkpoints, applies all source patches, fine-tunes the model, runs inference, and builds the Codabench submission ZIP |
+| `src/sms_avion/setup.ipynb` | Mounts Drive, configures all project paths, validates or extracts the EK-100 video folder, validates or extracts the SMS Loss Custom repo, downloads the AVION pretrain checkpoint, and downloads annotation CSVs and relevancy pickles |
+| `src/sms_avion/train_and_test.ipynb` | GPU verification, dependency installation (pinned PyTorch + CUDA, flash-attn, etc.), Drive mount, base fine-tuning (Section 4), resume fine-tuning (Section 5), inference (Section 6), and submission ZIP packaging (Section 7) |
+
+`setup.ipynb` needs to be run only once per Drive session. `train_and_test.ipynb` can be re-entered at any section after a session restart because each section independently re-declares all paths and checks flash-attn availability.
 
 ### Data & Models
 
-- **Backbone**: AVION LaViLa ViT-L pretrain checkpoint (`avion_pretrain_lavila_vitl_best.pt`, ~1.3 GB)
-- **SMS-Loss repo**: `xqwang14/SMS-Loss` (cloned from GitHub)
-- **Videos**: AVION pre-processed EK-100 clips (`EK100_320p_15sec_30fps_libx264`, 320p, 15 s chunks, 30 fps)
-- **Annotations**: `EPIC_100_retrieval_train.csv`, `EPIC_100_retrieval_test.csv`, `caption_relevancy_EPIC_100_retrieval_train.pkl`
+| Item | Size | Notes |
+|---|---|---|
+| EK-100 videos (`EK100_320p_15sec_30fps_libx264`) | ~720 GB | 320p, 15-second chunks at 30 fps encoded with libx264; added to Drive as a folder shortcut or ZIP — `setup.ipynb` handles both |
+| SMS Loss Custom repo (`SMS_Loss_Custom`) | — | Pre-patched fork of `xqwang14/SMS-Loss`; must be uploaded to Drive as a folder or ZIP before running `setup.ipynb` |
+| AVION pretrain checkpoint (`avion_pretrain_lavila_vitl_best.pt`) | ~1.3 GB | Downloaded automatically by `setup.ipynb` from the UT Austin Box link provided by the AVION authors |
+| `EPIC_100_retrieval_train.csv` | — | Downloaded automatically by `setup.ipynb` from the EPIC-KITCHENS GitHub annotations repo |
+| `EPIC_100_retrieval_test.csv` | — | Downloaded automatically by `setup.ipynb` from the EPIC-KITCHENS GitHub annotations repo |
+| `caption_relevancy_EPIC_100_retrieval_train.pkl` | — | Soft relevancy labels for the training split; downloaded automatically by `setup.ipynb` from the LaViLa Facebook AI public files |
+| `caption_relevancy_EPIC_100_retrieval_test.pkl` | — | Soft relevancy labels for the test split; **must be uploaded manually** to `EK100_annotations/` on Drive (not publicly hosted) |
 
-### Key Source Patches Applied
+### SMS Loss Custom Repo — Patches Applied
 
-Several bugs in the SMS-Loss codebase required patching before training and inference could run:
+The SMS Loss Custom repo is a version of `xqwang14/SMS-Loss` with all required patches already applied. The patches fix the following bugs that prevented training and inference from running on the EK-100 data:
 
 | File | Patch |
 |---|---|
-| `scripts/ammplus_finetune.py` | Unpack `images, texts` in gradient-accumulation branch; replace undefined `args.accum_freq` with `args.update_freq`; safe fallbacks for missing `checkpoint['args']` fields; save a numbered `checkpoint_{epoch:04d}.pt` every epoch; disable live validation (not needed during training) |
-| `avion/data/clip_dataset.py` | Retry `__getitem__` up to 20 times with a random index if `get_raw_item()` returns `None`; guard `relevancy_mat` load when `relevancy_test` path is absent |
-| `scripts/test_mir.py` | Guard against missing `checkpoint['args']`; strip `module.` prefix from resumed state dicts; make `--relevancy-path` optional (saves submission first, then computes metrics only if the file exists); skip unused train-dataset construction |
+| `scripts/ammplus_finetune.py` | Unpack `(images, texts)` tuple correctly in the gradient-accumulation branch; replace undefined `args.accum_freq` reference with `args.update_freq`; add safe fallbacks for missing fields in `checkpoint['args']`; save a numbered `checkpoint_{epoch:04d}.pt` file at the end of every epoch; disable live validation (not needed during training, significantly slows each epoch) |
+| `avion/data/clip_dataset.py` | Retry `__getitem__` up to 20 times with a random index when `get_raw_item()` returns `None` (handles corrupt or missing video chunks without crashing); guard the `relevancy_mat` load when the test relevancy path is absent |
+| `scripts/test_mir.py` | Guard against missing `checkpoint['args']` dict; strip `module.` prefix from state-dict keys when loading from a `DataParallel`-wrapped checkpoint; make `--relevancy-path` optional so a submission is always written even without the test relevancy file; skip unused train-dataset construction to avoid errors when only test data is needed |
+
+### Dependency Stack
+
+Installed in `train_and_test.ipynb` (Section 2). The versions below are pinned because `flash-attn` must be compiled against a specific PyTorch + CUDA combination:
+
+| Package | Version |
+|---|---|
+| `torch` | 2.4.1+cu121 |
+| `torchvision` | 0.19.1+cu121 |
+| `torchaudio` | 2.4.1+cu121 |
+| `flash-attn` | Latest compatible with torch 2.4.1 (compiled from source, ~5 min) |
+| `einops`, `kornia`, `timm`, `transformers`, `decord`, `ninja` | Latest |
+| `openai/CLIP`, `open_clip_torch`, `reranking` | Latest |
+
+`flash-attn` is optional — training and inference still run without it but are slower and consume more VRAM. A100 (40 or 80 GB) is recommended for ViT-L fine-tuning; T4 (16 GB) may require reducing `--batch-size`.
 
 ### Files Generated
 
-| File | Location | Description |
-|---|---|---|
-| `checkpoint_{epoch:04d}.pt` | `experiments/sms_vitl/` | Per-epoch full checkpoint (weights + optimizer + scaler) |
-| `submission.pkl` | `experiments/sms_vitl/` | Raw similarity matrix with `vis_ids` and `txt_ids` |
-| `submission.zip` | `experiments/sms_vitl/` | Codabench-compatible ZIP containing `test.pkl` (protocol-2 pickle, numpy compat fix applied) |
+All files are saved to `experiments/sms_vitl/` on Google Drive (`EXP_DIR`):
+
+| File | Description |
+|---|---|
+| `checkpoint_{epoch:04d}.pt` | Full checkpoint per epoch (model weights + optimizer state + scaler state) |
+| `checkpoint_round_1.pt` | Checkpoint at the end of the base fine-tuning run (epoch 10); used as the starting point for the resume section |
+| `submission.pkl` | Raw similarity matrix (9668 × 3842) with `vis_ids` and `txt_ids`; produced by inference |
+| `submission.zip` | Codabench-compatible ZIP containing `test.pkl` (protocol-2 pickle with numpy compat patch applied) |
 
 ### Results
 
-| Training epochs | Inference flags | nDCG AVG (Codabench) |
-|---|---|---|
-| 10 | — | **68.80** |
-| 10 | `--flip --clip-length 32` | **69.48** |
-| 16 | `--flip --clip-length 32` | **69.68** |
+| Iteration | Training | Inference flags | nDCG AVG (Codabench) |
+|---|---|---|---|
+| 4 | 10 epochs from pretrain | Standard (no TTA) | **68.80** |
+| 5 | 10 epochs from pretrain | `--flip --clip-length 32` | **69.48** |
+| 6 | 16 epochs from pretrain | `--flip --clip-length 32` | **69.68** |
 
-Test-time augmentation (`--flip`) and longer clip sampling (`--clip-length 32`) together add ~0.7 nDCG on top of the base inference. Extending fine-tuning from 10 to 16 epochs provides a further +0.2 nDCG improvement.
+Test-time augmentation (`--flip --clip-length 32`) adds **+0.68 nDCG** at iteration 5 vs. 4 with no additional training. Extending fine-tuning from 10 to 16 epochs adds a further **+0.20 nDCG** at iteration 6.
