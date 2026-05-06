@@ -13,6 +13,9 @@ Primary metric: **nDCG AVG** (average of video→text and text→video nDCG).
 | 1 | JPoSE Base | **53.53** |
 | 2 | JPoSE Ensemble (no re-ranking) | **55.31** |
 | 3 | JPoSE Ensemble + Re-ranking | **55.82** |
+| 4 | AVION ViT-L + SMS Loss (10 ep, no inference flags) | **68.80** |
+| 5 | AVION ViT-L + SMS Loss (10 ep, flip + clip-length 32) | **69.48** |
+| 6 | AVION ViT-L + SMS Loss (16 ep, flip + clip-length 32) | **69.68** |
 
 ---
 
@@ -129,3 +132,77 @@ Default parameters: `k = 20`, `alpha = 0.3`.
 |---|---|
 | Ensemble only | **55.31** |
 | Ensemble + re-ranking (k=20, α=0.3) | **55.82** |
+
+---
+
+## Approach 4 — AVION ViT-L + SMS Loss
+
+### Strategy
+
+Fine-tunes the **AVION** video-language model (CLIP ViT-L backbone pre-trained on Ego4D via LaViLa) with **SMS Loss** (Symmetric Multi-Similarity Loss) on the EPIC-KITCHENS-100 retrieval training set. SMS Loss uses the ground-truth relevancy matrix to pull together positive pairs and push apart negatives in proportion to their relevance scores, giving a more nuanced supervision signal than binary contrastive losses.
+
+**Step 1 — Base fine-tune** — the LaViLa ViT-L checkpoint is fine-tuned from scratch for 10 epochs using `ammplus_finetune.py` from the SMS-Loss repository:
+
+```
+torchrun --nproc_per_node=1 scripts/ammplus_finetune.py
+  --model        CLIP_VITL14
+  --batch-size   48
+  --epochs       10
+  --lr           2e-5
+  --loss-margin  0.6
+  --loss-thres   0.1
+  --use-fast-conv1
+  --grad-checkpointing
+```
+
+**Step 2 — Continue fine-tune (optional)** — training is resumed from the epoch-10 checkpoint for additional epochs using `--resume` and `--start-epoch 10`.
+
+**Step 3 — Inference** — `test_mir.py` runs a forward pass over all test video segments and text queries to produce the similarity matrix. Two inference settings were compared:
+
+| Setting | Flags |
+|---|---|
+| Standard | (none beyond required args) |
+| TTA | `--flip --clip-length 32` |
+
+`--flip` enables horizontal flip test-time augmentation (averages forward and flipped features). `--clip-length 32` increases the number of frames sampled per clip from the default (16) to 32, giving richer temporal context.
+
+### Notebook
+
+| Notebook | Purpose |
+|---|---|
+| `src/sms_avion/sms_avion.ipynb` | Installs dependencies, mounts Drive, downloads checkpoints, applies all source patches, fine-tunes the model, runs inference, and builds the Codabench submission ZIP |
+
+### Data & Models
+
+- **Backbone**: AVION LaViLa ViT-L pretrain checkpoint (`avion_pretrain_lavila_vitl_best.pt`, ~1.3 GB)
+- **SMS-Loss repo**: `xqwang14/SMS-Loss` (cloned from GitHub)
+- **Videos**: AVION pre-processed EK-100 clips (`EK100_320p_15sec_30fps_libx264`, 320p, 15 s chunks, 30 fps)
+- **Annotations**: `EPIC_100_retrieval_train.csv`, `EPIC_100_retrieval_test.csv`, `caption_relevancy_EPIC_100_retrieval_train.pkl`
+
+### Key Source Patches Applied
+
+Several bugs in the SMS-Loss codebase required patching before training and inference could run:
+
+| File | Patch |
+|---|---|
+| `scripts/ammplus_finetune.py` | Unpack `images, texts` in gradient-accumulation branch; replace undefined `args.accum_freq` with `args.update_freq`; safe fallbacks for missing `checkpoint['args']` fields; save a numbered `checkpoint_{epoch:04d}.pt` every epoch; disable live validation (not needed during training) |
+| `avion/data/clip_dataset.py` | Retry `__getitem__` up to 20 times with a random index if `get_raw_item()` returns `None`; guard `relevancy_mat` load when `relevancy_test` path is absent |
+| `scripts/test_mir.py` | Guard against missing `checkpoint['args']`; strip `module.` prefix from resumed state dicts; make `--relevancy-path` optional (saves submission first, then computes metrics only if the file exists); skip unused train-dataset construction |
+
+### Files Generated
+
+| File | Location | Description |
+|---|---|---|
+| `checkpoint_{epoch:04d}.pt` | `experiments/sms_vitl/` | Per-epoch full checkpoint (weights + optimizer + scaler) |
+| `submission.pkl` | `experiments/sms_vitl/` | Raw similarity matrix with `vis_ids` and `txt_ids` |
+| `submission.zip` | `experiments/sms_vitl/` | Codabench-compatible ZIP containing `test.pkl` (protocol-2 pickle, numpy compat fix applied) |
+
+### Results
+
+| Training epochs | Inference flags | nDCG AVG (Codabench) |
+|---|---|---|
+| 10 | — | **68.80** |
+| 10 | `--flip --clip-length 32` | **69.48** |
+| 16 | `--flip --clip-length 32` | **69.68** |
+
+Test-time augmentation (`--flip`) and longer clip sampling (`--clip-length 32`) together add ~0.7 nDCG on top of the base inference. Extending fine-tuning from 10 to 16 epochs provides a further +0.2 nDCG improvement.
