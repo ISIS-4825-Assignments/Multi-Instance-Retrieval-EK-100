@@ -130,8 +130,6 @@ def warm_text_encoder(device: str | None = None) -> float:
 def cpu_free_text_eta_note() -> str:
     """User-facing estimate for HF cpu-basic."""
     return (
-        "Free-text runs on **CPU** on this Space (no GPU). "
-        "First search after startup: typically **2–4 minutes** (loads the text encoder). "
-        "Later searches: about **5–20 seconds**. Ranking against precomputed "
-        "`video_embeds.npy` is fast."
+        '<p class="ek-note">Custom queries use CPU here: '
+        "about 90 seconds the first time, then about 5 seconds each.</p>"
     )

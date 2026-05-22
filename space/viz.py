@@ -152,95 +152,40 @@ def t2v_status_html(
     *,
     error: bool = False,
 ) -> str:
-    q = html.escape((query or "").strip()[:120])
-    if error or not results:
-        msg = mode or "No results."
-        return _status_box(msg, "err" if error else "warn")
-    top = results[0]
-    n = len(results)
-    lines = [
-        f"<strong>{n}</strong> segments ranked",
-        f"top score <strong>{top['score']:.4f}</strong>",
-        f"<span style='opacity:0.85'>· {html.escape(mode)}</span>",
-    ]
-    if q:
-        lines.insert(0, f"Query: <em>{q}</em>")
-    return f'<div class="ek-status-ok">{" · ".join(lines)}</div>'
-
-
-def t2v_leaderboard_html(results: list[dict], active_idx: int = 0) -> str:
-    if not results:
+    q = (query or "").strip()
+    if error or (not results and mode):
+        return f'<div class="ek-status-err">{html.escape(mode or "No results.")}</div>'
+    if not q:
         return ""
-    rows = []
-    for i, item in enumerate(results):
-        cls = " class='ek-row-active'" if i == active_idx else ""
-        narr = html.escape((item.get("narration") or "")[:90])
-        if len(item.get("narration") or "") > 90:
-            narr += "…"
-        rows.append(
-            f"<tr{cls}><td>#{i + 1}</td>"
-            f"<td class='ek-score'>{item['score']:.4f}</td>"
-            f"<td><code>{html.escape(item['vis_id'])}</code></td>"
-            f"<td>{narr}</td></tr>"
-        )
-    return f"""
-<div class="ek-t2v-strip">
-  <table>
-    <thead><tr><th>#</th><th>Score</th><th>Segment</th><th>Narration</th></tr></thead>
-    <tbody>{"".join(rows)}</tbody>
-  </table>
-</div>
-"""
+    return (
+        f'<div class="ek-query-display">'
+        f'<span class="ek-query-label">Query</span>'
+        f'<span class="ek-query-text">{html.escape(q)}</span>'
+        f"</div>"
+    )
 
 
-def v2t_metrics_html(results: list[dict], ground_truth: str | None) -> str:
-    if not results:
+def v2t_ground_truth_html(ground_truth: str | None) -> str:
+    text = (ground_truth or "").strip()
+    if not text:
         return ""
-    gt_norm = _v2t_norm_caption(ground_truth) if ground_truth else ""
-    gt_rank = None
-    for i, item in enumerate(results, 1):
-        if gt_norm and _v2t_norm_caption(item.get("caption") or "") == gt_norm:
-            gt_rank = i
-            break
-    hit = gt_rank == 1
-    pills = [
-        f"<span class='ek-pill'>Top-{len(results)} captions</span>",
-        f"<span class='ek-pill'>Best score {results[0]['score']:.4f}</span>",
-    ]
-    if gt_norm:
-        if hit:
-            pills.append("<span class='ek-pill ek-pill--hit'>Hit@1 ✓</span>")
-        elif gt_rank is not None:
-            pills.append(
-                f"<span class='ek-pill ek-pill--miss'>GT at rank {gt_rank}</span>"
-            )
-        else:
-            pills.append("<span class='ek-pill ek-pill--miss'>GT not in top-K</span>")
-    return f'<div class="ek-metrics">{"".join(pills)}</div>'
+    return (
+        f'<div class="ek-gt-display">'
+        f'<span class="ek-gt-label">Ground truth</span>'
+        f'<span class="ek-gt-text">{html.escape(text)}</span>'
+        f"</div>"
+    )
 
 
-def v2t_focus_html(item: dict, rank: int, ground_truth: str | None = None) -> str:
-    cap = html.escape((item.get("caption") or "").strip())
-    gt = (ground_truth or "").strip()
-    gt_badge = ""
-    if gt and _v2t_norm_caption(gt) == _v2t_norm_caption(item.get("caption") or ""):
-        gt_badge = " · <strong style='color:#14532d'>Ground truth</strong>"
-    return f"""<div class="ek-focus">
-<p><strong>Rank {rank}</strong> · score <code>{item['score']:.4f}</code>{gt_badge}</p>
-<blockquote>{cap}</blockquote>
-</div>"""
-
-
-def v2t_clip_header_md(assets: DemoAssets, vis_id: str) -> str:
+def v2t_clip_meta_html(assets: DemoAssets, vis_id: str) -> str:
     row = assets.test_df.loc[assets.test_df["narration_id"] == vis_id]
     if row.empty:
-        return f"**`{vis_id}`**"
+        return f'<p class="ek-meta">{html.escape(vis_id)}</p>'
     row = row.iloc[0]
-    ref = html.escape(str(row["narration"]).strip())
     return (
-        f"**`{vis_id}`** · `{row['participant_id']}` · `{row['video_id']}` · "
-        f"`{row['start_timestamp']}` → `{row['stop_timestamp']}`\n\n"
-        f"**Ground truth:** {ref}"
+        f'<p class="ek-meta">{html.escape(vis_id)} · '
+        f'{html.escape(str(row["participant_id"]))} · '
+        f'{html.escape(str(row["start_timestamp"]))}–{html.escape(str(row["stop_timestamp"]))}</p>'
     )
 
 
@@ -501,22 +446,10 @@ segment_summary_md = v2t_clip_header_md
 
 
 def t2v_choice_label(rank: int, item: dict) -> str:
-    narr = (item.get("narration") or "")[:72]
-    if len(item.get("narration") or "") > 72:
-        narr += "…"
-    return f"#{rank}  ·  {item['score']:.4f}  ·  {narr}"
-
-
-def t2v_detail_md(item: dict, rank: int, mode: str) -> str:
-    narr = html.escape(str(item.get("narration", "")))
-    has_video = "Segment video available" if item.get("_has_video") else "Video pending (run Colab asset build)"
-    return f"""### Rank {rank} · `{item['vis_id']}`
-**Score:** `{item['score']:.4f}` · `{item.get('participant', '')}` / `{item.get('video_id', '')}`
-
-> {narr}
-
-*{html.escape(mode)}* · {has_video}
-"""
+    narr = (item.get("narration") or "").strip()
+    if len(narr) > 70:
+        narr = narr[:70] + "…"
+    return f"#{rank} · {item['score']:.3f} · {narr}"
 
 
 def t2v_choices(results: list[dict]) -> list[str]:
@@ -544,37 +477,29 @@ def enrich_t2v_item(assets: DemoAssets, item: dict) -> dict:
     return {**item, "_has_video": clip_media_available(assets, item["vis_id"])}
 
 
-def v2t_choice_label(rank: int, item: dict) -> str:
-    cap = (item.get("caption") or "")[:80]
-    if len(item.get("caption") or "") > 80:
-        cap += "…"
-    return f"#{rank}  ·  {item['score']:.4f}  ·  {cap}"
+def v2t_choice_label(rank: int, item: dict, gt_norm: str = "") -> str:
+    cap = (item.get("caption") or "").strip()
+    if len(cap) > 70:
+        cap = cap[:70] + "…"
+    tag = " · ✓" if gt_norm and _v2t_norm_caption(item.get("caption") or "") == gt_norm else ""
+    return f"#{rank} · {item['score']:.3f} · {cap}{tag}"
 
 
-def v2t_detail_md(item: dict, rank: int) -> str:
-    return f"""### Rank {rank} matching caption
-**Score:** `{item['score']:.4f}`
-
-> {item.get('caption', '')}
-"""
-
-
-def v2t_choices(results: list[dict]) -> list[str]:
-    return [v2t_choice_label(i, r) for i, r in enumerate(results, 1)]
+def v2t_choices(results: list[dict], ground_truth: str | None = None) -> list[str]:
+    gt_norm = _v2t_norm_caption(ground_truth) if ground_truth else ""
+    return [v2t_choice_label(i, r, gt_norm) for i, r in enumerate(results, 1)]
 
 
 def empty_t2v_outputs():
     import gradio as gr
 
     return (
-        _status_box("Enter a preset or custom query, then Search.", "warn"),
+        '<div class="ek-status-warn">Enter a preset or custom query, then Search.</div>',
         [],
         None,
         None,
         None,
-        "Run a search to see ranked segments.",
         gr.update(choices=[], value=None),
-        "",
         None,
         "",
     )
@@ -587,12 +512,10 @@ def empty_v2t_outputs():
         None,
         None,
         None,
-        "Loading a random kitchen clip…",
+        "",
         "",
         None,
-        "<p class='ek-hint'>Ranked captions will appear here.</p>",
         gr.update(choices=[], value=None),
-        "",
         [],
         "",
     )

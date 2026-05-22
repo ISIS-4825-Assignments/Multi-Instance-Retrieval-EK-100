@@ -46,21 +46,15 @@ from text_model import (
 from viz import (
     empty_t2v_outputs,
     empty_v2t_outputs,
-    enrich_t2v_item,
     frame_images_for_gradio,
     parse_t2v_choice,
-    parse_v2t_choice,
     segment_video_for_gradio,
     t2v_choices,
-    t2v_detail_md,
     t2v_frames_for_item,
-    t2v_leaderboard_html,
     t2v_status_html,
     v2t_choices,
-    v2t_clip_header_md,
-    v2t_focus_html,
-    v2t_metrics_html,
-    v2t_predictions_html,
+    v2t_clip_meta_html,
+    v2t_ground_truth_html,
 )
 
 _DEMO_CSS = (SPACE_DIR / "demo.css").read_text(encoding="utf-8")
@@ -79,23 +73,12 @@ def _rank_text(query: str, *, device: str | None = None):
     if assets.video_embeds is None:
         return (
             [],
-            "Free-text needs `video_embeds.npy` on the demo dataset (see README). "
-            "Preset captions still work instantly via the official score matrix.",
+            "Free-text needs video_embeds.npy on the demo dataset. Presets still work.",
         )
 
     dev = device or free_text_device()
     vec = encode_text(query, device=dev)
-    results, mode = rank_text_to_video(query, text_vec=vec, assets=assets)
-    elapsed = last_encode_seconds()
-    load_sec = last_load_seconds()
-    if dev == "cpu":
-        parts = ["free text (CPU encoder + precomputed video embeddings)"]
-        if elapsed is not None:
-            parts.append(f"{elapsed:.1f}s total")
-        if load_sec is not None and load_sec > 1.0:
-            parts.append(f"model load {load_sec:.1f}s")
-        mode = " · ".join(parts)
-    return results, mode
+    return rank_text_to_video(query, text_vec=vec, assets=assets)
 
 
 def _rank_text_safe(query: str, *, device: str | None = None):
@@ -139,27 +122,22 @@ def _t2v_pack(query: str, results: list, mode: str, *, error: bool = False):
             None,
             None,
             None,
-            mode or "No results.",
             gr.update(choices=[], value=None),
-            "",
             None,
             "",
         )
 
     assets = load_assets()
-    item = enrich_t2v_item(assets, results[0])
+    item = results[0]
     f0, f1, f2 = t2v_frames_for_item(assets, item)
     choices = t2v_choices(results)
-    idx = 0
     return (
-        t2v_status_html(mode, results, query),
+        t2v_status_html("", results, query),
         results,
         f0,
         f1,
         f2,
-        t2v_detail_md(item, 1, mode),
         gr.update(choices=choices, value=choices[0] if choices else None),
-        t2v_leaderboard_html(results, active_idx=idx),
         segment_video_for_gradio(assets, item["vis_id"]),
         mode,
     )
@@ -171,9 +149,7 @@ def run_t2v_search(query: str, progress=gr.Progress(track_tqdm=False)):
         return empty_t2v_outputs()
 
     if _needs_live_encoder(query):
-        progress(0, desc="Encoding query (first run on CPU may take a few minutes)…")
-        if hf_space_is_cpu_only():
-            progress(0.05, desc=cpu_free_text_eta_note()[:120] + "…")
+        progress(0, desc="Encoding query (~90s first time, ~5s after)…")
 
     results, mode = (
         _run_free_text_rank(query)
@@ -187,21 +163,18 @@ def run_t2v_search(query: str, progress=gr.Progress(track_tqdm=False)):
     return _t2v_pack(query, results, mode, error=is_err)
 
 
-def on_t2v_pick(choice: str | None, results: list, mode: str):
+def on_t2v_pick(choice: str | None, results: list):
     if not results:
-        return None, None, None, "No results.", "", None
+        return None, None, None, None
     assets = load_assets()
     idx = parse_t2v_choice(choice)
     idx = max(0, min(idx, len(results) - 1))
-    item = enrich_t2v_item(assets, results[idx])
+    item = results[idx]
     f0, f1, f2 = t2v_frames_for_item(assets, item)
-    mode = (mode or "").strip() or "retrieval"
     return (
         f0,
         f1,
         f2,
-        t2v_detail_md(item, idx + 1, mode),
-        t2v_leaderboard_html(results, active_idx=idx),
         segment_video_for_gradio(assets, item["vis_id"]),
     )
 
@@ -229,12 +202,10 @@ def _v2t_pack(vis_id: str, results: list, *, error_msg: str | None = None):
             None,
             None,
             None,
-            f"**Video → Text:** {error_msg}",
+            f'<div class="ek-status-err">{error_msg}</div>',
             "",
             None,
-            "",
             gr.update(choices=[], value=None),
-            "",
             [],
             vis_id,
         )
@@ -242,18 +213,15 @@ def _v2t_pack(vis_id: str, results: list, *, error_msg: str | None = None):
     gt = _v2t_ground_truth(assets, vis_id)
     f0, f1, f2 = frame_images_for_gradio(assets, vis_id, 3)
     video = segment_video_for_gradio(assets, vis_id)
-    choices = v2t_choices(results)
-    focus = v2t_focus_html(results[0], 1, gt) if results else ""
+    choices = v2t_choices(results, gt)
     return (
         f0,
         f1,
         f2,
-        v2t_clip_header_md(assets, vis_id),
-        v2t_metrics_html(results, gt),
+        v2t_clip_meta_html(assets, vis_id),
+        v2t_ground_truth_html(gt),
         video,
-        v2t_predictions_html(results, ground_truth=gt),
         gr.update(choices=choices, value=choices[0] if choices else None),
-        focus,
         results,
         vis_id,
     )
@@ -269,23 +237,13 @@ def run_v2t(vis_id: str):
         return _v2t_pack(
             vis_id,
             [],
-            error_msg=f"Clip `{vis_id}` is not in the test similarity matrix.",
+            error_msg=f"Clip {vis_id} is not in the test set.",
         )
 
     results = rank_video_to_text(vis_id)
     if not results:
-        return _v2t_pack(vis_id, [], error_msg="No ranked captions for this clip.")
+        return _v2t_pack(vis_id, [], error_msg="No captions ranked for this clip.")
     return _v2t_pack(vis_id, results)
-
-
-def on_v2t_caption_pick(choice: str | None, results: list, vis_id: str):
-    if not results:
-        return ""
-    assets = load_assets()
-    gt = _v2t_ground_truth(assets, vis_id)
-    idx = parse_v2t_choice(choice)
-    idx = max(0, min(idx, len(results) - 1))
-    return v2t_focus_html(results[idx], idx + 1, gt)
 
 
 def load_random_v2t(current_vis_id: str | None):
@@ -296,31 +254,23 @@ def load_random_v2t(current_vis_id: str | None):
     return run_v2t(vis_id)
 
 
-_CPU_NOTE = (
-    "\n\n> **CPU Space (free tier):** presets and Video→Text are instant. "
-    "Custom text uses a live encoder on CPU — **~2–4 min** the first time, "
-    "**~5–20 s** after that (needs `video_embeds.npy` on the demo dataset)."
-    if hf_space_is_cpu_only()
-    else ""
-)
-
-INTRO = f"""
-**EPIC-KITCHENS-100 Multi-Instance Retrieval** — [AVION ViT-L + SMS](https://huggingface.co/jsurrea/avion-vitl-ek100-sms) (**69.68 nDCG AVG**).
-
-**Text → Video:** describe an action → ranked kitchen clips with **full segment video** and frame strip.  
-**Video → Text:** random test clip → ranked captions with **Hit@1** and ground-truth highlight.
-
-After the [full-assets Colab notebook](https://github.com/ISIS-4825-Assignments/Multi-Instance-Retrieval-EK-100/tree/main/notebooks), previews and MP4s cover the test set.{_CPU_NOTE}
+INTRO = """
+<p class="ek-intro">
+<a href="https://huggingface.co/jsurrea/avion-vitl-ek100-sms">AVION ViT-L + SMS</a>
+on EPIC-KITCHENS-100 (69.68 nDCG AVG).
+Text → Video: describe an action and browse ranked clips.
+Video → Text: watch a random clip and see predicted captions.
+</p>
 """
 
 _p0 = preset_choices()
 
 with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) as demo:
-    gr.Markdown(INTRO)
+    gr.HTML(INTRO)
 
     with gr.Tab("Text → Video"):
         if hf_space_is_cpu_only():
-            gr.Markdown(cpu_free_text_eta_note())
+            gr.HTML(cpu_free_text_eta_note())
 
         with gr.Row():
             preset = gr.Dropdown(
@@ -344,7 +294,7 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
         with gr.Row(equal_height=False):
             with gr.Column(scale=5):
                 t2v_video = gr.Video(
-                    label="Segment video (15 s clip)",
+                    label="Segment video",
                     height=280,
                     interactive=False,
                 )
@@ -352,15 +302,15 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
                     t2v_f0 = gr.Image(label="Start", height=150, interactive=False)
                     t2v_f1 = gr.Image(label="Middle", height=150, interactive=False)
                     t2v_f2 = gr.Image(label="End", height=150, interactive=False)
-            with gr.Column(scale=4):
-                gr.Markdown('<p class="ek-section-title">Top segments</p>')
-                gr.Markdown(
-                    '<p class="ek-hint">Pick a rank to update video, frames, and details.</p>'
+            with gr.Column(scale=4, elem_classes=["ek-bento-panel"]):
+                gr.HTML('<p class="ek-section-title">Top segments</p>')
+                t2v_pick = gr.Radio(
+                    label=None,
+                    choices=[],
+                    value=None,
+                    show_label=False,
+                    elem_classes=["ek-chip-radio"],
                 )
-                t2v_pick = gr.Radio(label=None, choices=[], value=None, show_label=False)
-                t2v_detail = gr.Markdown()
-
-        t2v_leaderboard = gr.HTML()
 
         t2v_outputs = [
             t2v_status,
@@ -368,9 +318,7 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
             t2v_f0,
             t2v_f1,
             t2v_f2,
-            t2v_detail,
             t2v_pick,
-            t2v_leaderboard,
             t2v_video,
             t2v_mode_state,
         ]
@@ -380,14 +328,14 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
         preset.change(search_preset, inputs=preset, outputs=t2v_outputs)
         t2v_pick.change(
             on_t2v_pick,
-            inputs=[t2v_pick, t2v_state, t2v_mode_state],
-            outputs=[t2v_f0, t2v_f1, t2v_f2, t2v_detail, t2v_leaderboard, t2v_video],
+            inputs=[t2v_pick, t2v_state],
+            outputs=[t2v_f0, t2v_f1, t2v_f2, t2v_video],
         )
 
     with gr.Tab("Video → Text"):
-        gr.Markdown(
-            '<p class="ek-hint">Loads a <strong>random</strong> test clip on startup. '
-            "Use the button for another clip; pick a caption rank to focus it below.</p>"
+        gr.HTML(
+            '<p class="ek-hint">Random test clip on load. '
+            "Another clip loads a new sample.</p>"
         )
         v2t_random_btn = gr.Button("Another random clip", variant="primary")
         v2t_vis_state = gr.State("")
@@ -395,7 +343,7 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
         with gr.Row(equal_height=False):
             with gr.Column(scale=5):
                 v2t_video = gr.Video(
-                    label="Segment video (15 s clip)",
+                    label="Segment video",
                     height=280,
                     interactive=False,
                 )
@@ -403,26 +351,28 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
                     v2t_f0 = gr.Image(label="Start", height=140, interactive=False)
                     v2t_f1 = gr.Image(label="Middle", height=140, interactive=False)
                     v2t_f2 = gr.Image(label="End", height=140, interactive=False)
-            with gr.Column(scale=4):
-                v2t_clip_md = gr.Markdown()
-                v2t_metrics = gr.HTML()
+            with gr.Column(scale=4, elem_classes=["ek-bento-panel"]):
+                v2t_meta = gr.HTML()
+                v2t_gt = gr.HTML()
+                gr.HTML('<p class="ek-section-title">Predicted captions</p>')
+                v2t_pick = gr.Radio(
+                    label=None,
+                    choices=[],
+                    value=None,
+                    show_label=False,
+                    elem_classes=["ek-chip-radio"],
+                )
 
-        v2t_preds = gr.HTML()
-        gr.Markdown('<p class="ek-section-title">Caption ranks</p>')
-        v2t_caption_pick = gr.Radio(label=None, choices=[], value=None, show_label=False)
-        v2t_focus = gr.HTML()
         v2t_results_state = gr.State([])
 
         v2t_outputs = [
             v2t_f0,
             v2t_f1,
             v2t_f2,
-            v2t_clip_md,
-            v2t_metrics,
+            v2t_meta,
+            v2t_gt,
             v2t_video,
-            v2t_preds,
-            v2t_caption_pick,
-            v2t_focus,
+            v2t_pick,
             v2t_results_state,
             v2t_vis_state,
         ]
@@ -433,11 +383,6 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
             return search_preset(preset_val) + load_random_v2t(v2t_vis)
 
         v2t_random_btn.click(load_random_v2t, inputs=v2t_vis_state, outputs=v2t_outputs)
-        v2t_caption_pick.change(
-            on_v2t_caption_pick,
-            inputs=[v2t_caption_pick, v2t_results_state, v2t_vis_state],
-            outputs=v2t_focus,
-        )
         demo.load(on_startup, inputs=[preset, v2t_vis_state], outputs=v2v_all_outputs)
 
 demo.queue(default_concurrency_limit=2)
