@@ -172,8 +172,20 @@ pyrightconfig.json
 
 # Data files
 EK100_MIR/*
+data/caption_relevancy_EPIC_100_retrieval_test.pkl
+
+# Legacy local demo tree (optional)
+demo/
+
+# Space — runtime assets on jsurrea/ek100-mir-demo-assets (not in git)
+space/assets/
+space/checkpoint_round_2.pt
+space/*.pkl
+space/local_videos/
+.venv-demo/
 
 # Claude init file
 CLAUDE.md
 
+.DS_Store
 # End of https://www.toptal.com/developers/gitignore/api/python

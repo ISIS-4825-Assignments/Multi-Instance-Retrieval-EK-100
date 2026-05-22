@@ -6,6 +6,12 @@ Given a natural-language query (e.g. *"cut tomato"*), the task is to rank **9,66
 
 This repository contains three progressively stronger approaches, implemented as Google Colab notebooks. The best approach reaches **69.68 nDCG AVG** on the public Codabench leaderboard.
 
+### Interactive demo (Hugging Face)
+
+- **Gradio Space:** [jsurrea/ek100-mir-demo](https://huggingface.co/spaces/jsurrea/ek100-mir-demo) — preset benchmark queries, random video→text clips, and optional free-text search (CPU).
+- **Model:** [jsurrea/avion-vitl-ek100-sms](https://huggingface.co/jsurrea/avion-vitl-ek100-sms)
+- **Assets dataset:** [jsurrea/ek100-mir-demo-assets](https://huggingface.co/datasets/jsurrea/ek100-mir-demo-assets)
+
 ---
 
 ## **Results**
@@ -43,6 +49,10 @@ A full breakdown of each iteration — strategy, hyperparameters, data sources, 
 │   └── sms_avion/                  Approach 3 — AVION ViT-L fine-tuned with SMS Loss
 │       ├── setup.ipynb                 Step 1 (run once): validate data, download pretrain
 │       └── train_and_test.ipynb        Step 2: install deps, fine-tune, infer, submission
+├── space/                          Hugging Face Gradio demo (runtime assets on HF dataset)
+│   ├── app.py                      UI entrypoint
+│   ├── config.py, rank.py, …       Ranking, loaders, SMS/AVION hooks
+│   └── requirements.txt            Space dependencies
 └── archive/
     └── sms_avion_base.ipynb        Legacy monolithic version of Approach 3 (reference only)
 ```
