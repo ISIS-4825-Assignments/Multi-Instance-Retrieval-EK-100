@@ -19,6 +19,11 @@ Interactive demo for **AVION ViT-L + SMS** ([model card](https://huggingface.co/
 
 Runs on **CPU** (free tier). Preset search is instant. **Free-text** encodes your query on CPU (~2–4 min first time, ~5–20 s after) and ranks against precomputed `video_embeds.npy`.
 
+## UI
+
+- **Text → Video:** status bar, ranked table, segment **MP4**, start/middle/end frames, radio to switch top-K.
+- **Video → Text:** random clip, **Hit@1** / GT rank pills, podium + table, segment **MP4**, caption radio + focus card.
+
 ## Assets
 
 Precomputed files are loaded from the dataset [`jsurrea/ek100-mir-demo-assets`](https://huggingface.co/datasets/jsurrea/ek100-mir-demo-assets):
@@ -26,7 +31,8 @@ Precomputed files are loaded from the dataset [`jsurrea/ek100-mir-demo-assets`](
 - `test.pkl` — full similarity matrix (9668 × 3842)
 - CSV metadata
 - `video_embeds.npy` — optional, enables free-text search
-- `thumbnails/` — optional JPEG frames for preset results
+- `thumbnails/` + `clips/` — segment previews (full test set after Colab build)
+- `v2t_clip_pool.json` — segments with media for Video → Text
 
 ## Source repo
 

@@ -19,6 +19,13 @@ def hf_thumbnail_url(vis_id: str, frame: int = 0) -> str:
         f"thumbnails/{vis_id}/frame_{frame}.jpg"
     )
 
+
+def hf_clip_url(vis_id: str) -> str:
+    return (
+        f"https://huggingface.co/datasets/{HF_DATASET_REPO}/resolve/main/"
+        f"clips/{vis_id}.mp4"
+    )
+
 # Local override (development / Colab before upload)
 LOCAL_ASSETS_DIR = Path(os.environ.get("EK100_DEMO_ASSETS", SPACE_DIR / "assets"))
 

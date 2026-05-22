@@ -9,10 +9,16 @@ from pathlib import Path
 
 import numpy as np
 
-from config import hf_thumbnail_url
+from config import HF_DATASET_REPO, hf_clip_url, hf_thumbnail_url
 from data_loader import DemoAssets, load_assets
 
+try:
+    from huggingface_hub import hf_hub_download
+except ImportError:
+    hf_hub_download = None  # type: ignore
+
 _THUMB_MIN_BYTES = 500
+_PLACEHOLDER_CACHE: np.ndarray | None = None
 
 
 def _local_frame_path(assets: DemoAssets, vis_id: str, frame: int) -> Path | None:
@@ -38,15 +44,56 @@ def _fetch_image_array(url: str) -> np.ndarray | None:
         return None
 
 
+def _fetch_image_hf(vis_id: str, frame: int) -> np.ndarray | None:
+    if hf_hub_download is None:
+        return None
+    try:
+        path = hf_hub_download(
+            repo_id=HF_DATASET_REPO,
+            filename=f"thumbnails/{vis_id}/frame_{frame}.jpg",
+            repo_type="dataset",
+        )
+        from PIL import Image
+
+        return np.array(Image.open(path).convert("RGB"))
+    except Exception:
+        return None
+
+
+def _placeholder_image(vis_id: str) -> np.ndarray:
+    global _PLACEHOLDER_CACHE
+    from PIL import Image, ImageDraw
+
+    if _PLACEHOLDER_CACHE is None:
+        img = Image.new("RGB", (320, 180), color=(228, 228, 231))
+        _PLACEHOLDER_CACHE = np.array(img)
+
+    out = Image.fromarray(_PLACEHOLDER_CACHE.copy())
+    draw = ImageDraw.Draw(out)
+    lines = ["No frame preview", vis_id[:28] + ("…" if len(vis_id) > 28 else "")]
+    y = 58
+    for line in lines:
+        draw.text((16, y), line, fill=(63, 63, 70))
+        y += 22
+    return np.array(out)
+
+
 def image_for_gradio(assets: DemoAssets, vis_id: str, frame: int = 0) -> str | np.ndarray | None:
     """
-    Value for gr.Image: local path, or RGB numpy from HF CDN.
-    Server-side fetch avoids broken previews when the Space cannot load resolve URLs directly.
+    Value for gr.Image: local path, HF dataset file, CDN URL, or placeholder.
+    Only ~264 test segments have thumbnails on the demo dataset.
     """
     local = _local_frame_path(assets, vis_id, frame)
     if local is not None:
         return str(local)
-    return _fetch_image_array(hf_thumbnail_url(vis_id, frame))
+    if vis_id in assets.thumbnail_vis_ids or vis_id in assets.v2t_clip_pool:
+        img = _fetch_image_hf(vis_id, frame)
+        if img is not None:
+            return img
+        img = _fetch_image_array(hf_thumbnail_url(vis_id, frame))
+        if img is not None:
+            return img
+    return _placeholder_image(vis_id)
 
 
 def frame_images_for_gradio(
@@ -56,11 +103,132 @@ def frame_images_for_gradio(
 
 
 def preview_image(assets: DemoAssets, vis_id: str) -> str | np.ndarray | None:
-    for frame in (1, 0, 2):
-        img = image_for_gradio(assets, vis_id, frame)
-        if img is not None:
-            return img
-    return None
+    return image_for_gradio(assets, vis_id, 1)
+
+
+def clip_media_available(assets: DemoAssets, vis_id: str) -> bool:
+    """Segment may have clips/thumbnails on the demo dataset or local assets."""
+    if vis_id not in assets.vis_id_to_row:
+        return False
+    if vis_id in assets.thumbnail_vis_ids:
+        return True
+    if vis_id in assets.v2t_clip_pool:
+        return True
+    local = assets.assets_dir / "clips" / f"{vis_id}.mp4"
+    return local.is_file() and local.stat().st_size >= 1024
+
+
+def segment_video_for_gradio(assets: DemoAssets, vis_id: str) -> str | None:
+    """Local path or HF-downloaded MP4 for gr.Video."""
+    if not clip_media_available(assets, vis_id):
+        return None
+    local = assets.assets_dir / "clips" / f"{vis_id}.mp4"
+    if local.is_file() and local.stat().st_size >= 1024:
+        return str(local)
+    if hf_hub_download is None:
+        return hf_clip_url(vis_id)
+    try:
+        path = hf_hub_download(
+            repo_id=HF_DATASET_REPO,
+            filename=f"clips/{vis_id}.mp4",
+            repo_type="dataset",
+        )
+        return path
+    except Exception:
+        return None
+
+
+def _status_box(message: str, kind: str = "ok") -> str:
+    cls = {"ok": "ek-status-ok", "warn": "ek-status-warn", "err": "ek-status-err"}.get(
+        kind, "ek-status-ok"
+    )
+    return f'<div class="{cls}">{html.escape(message)}</div>'
+
+
+def t2v_status_html(
+    mode: str,
+    results: list[dict],
+    query: str = "",
+    *,
+    error: bool = False,
+) -> str:
+    q = html.escape((query or "").strip()[:120])
+    if error or not results:
+        msg = mode or "No results."
+        return _status_box(msg, "err" if error else "warn")
+    top = results[0]
+    n = len(results)
+    lines = [
+        f"<strong>{n}</strong> segments ranked",
+        f"top score <strong>{top['score']:.4f}</strong>",
+        f"<span style='opacity:0.85'>· {html.escape(mode)}</span>",
+    ]
+    if q:
+        lines.insert(0, f"Query: <em>{q}</em>")
+    return f'<div class="ek-status-ok">{" · ".join(lines)}</div>'
+
+
+def t2v_leaderboard_html(results: list[dict], active_idx: int = 0) -> str:
+    if not results:
+        return ""
+    rows = []
+    for i, item in enumerate(results):
+        cls = " class='ek-row-active'" if i == active_idx else ""
+        narr = html.escape((item.get("narration") or "")[:90])
+        if len(item.get("narration") or "") > 90:
+            narr += "…"
+        rows.append(
+            f"<tr{cls}><td>#{i + 1}</td>"
+            f"<td class='ek-score'>{item['score']:.4f}</td>"
+            f"<td><code>{html.escape(item['vis_id'])}</code></td>"
+            f"<td>{narr}</td></tr>"
+        )
+    return f"""
+<div class="ek-t2v-strip">
+  <table>
+    <thead><tr><th>#</th><th>Score</th><th>Segment</th><th>Narration</th></tr></thead>
+    <tbody>{"".join(rows)}</tbody>
+  </table>
+</div>
+"""
+
+
+def v2t_metrics_html(results: list[dict], ground_truth: str | None) -> str:
+    if not results:
+        return ""
+    gt_norm = _v2t_norm_caption(ground_truth) if ground_truth else ""
+    gt_rank = None
+    for i, item in enumerate(results, 1):
+        if gt_norm and _v2t_norm_caption(item.get("caption") or "") == gt_norm:
+            gt_rank = i
+            break
+    hit = gt_rank == 1
+    pills = [
+        f"<span class='ek-pill'>Top-{len(results)} captions</span>",
+        f"<span class='ek-pill'>Best score {results[0]['score']:.4f}</span>",
+    ]
+    if gt_norm:
+        if hit:
+            pills.append("<span class='ek-pill ek-pill--hit'>Hit@1 ✓</span>")
+        elif gt_rank is not None:
+            pills.append(
+                f"<span class='ek-pill ek-pill--miss'>GT at rank {gt_rank}</span>"
+            )
+        else:
+            pills.append("<span class='ek-pill ek-pill--miss'>GT not in top-K</span>")
+    return f'<div class="ek-metrics">{"".join(pills)}</div>'
+
+
+def v2t_focus_html(item: dict, rank: int, ground_truth: str | None = None) -> str:
+    cap = html.escape((item.get("caption") or "").strip())
+    gt = (ground_truth or "").strip()
+    gt_badge = ""
+    if gt and _v2t_norm_caption(gt) == _v2t_norm_caption(item.get("caption") or ""):
+        gt_badge = " · <strong style='color:#14532d'>Ground truth</strong>"
+    return f"""<div class="ek-focus">
+<p><strong>Rank {rank}</strong> · score <code>{item['score']:.4f}</code>{gt_badge}</p>
+<blockquote>{cap}</blockquote>
+</div>"""
 
 
 def v2t_clip_header_md(assets: DemoAssets, vis_id: str) -> str:
@@ -340,12 +508,14 @@ def t2v_choice_label(rank: int, item: dict) -> str:
 
 
 def t2v_detail_md(item: dict, rank: int, mode: str) -> str:
-    return f"""### Rank {rank}
-**Score:** `{item['score']:.4f}` · **Segment:** `{item['vis_id']}`
+    narr = html.escape(str(item.get("narration", "")))
+    has_video = "Segment video available" if item.get("_has_video") else "Video pending (run Colab asset build)"
+    return f"""### Rank {rank} · `{item['vis_id']}`
+**Score:** `{item['score']:.4f}` · `{item.get('participant', '')}` / `{item.get('video_id', '')}`
 
-> {item.get('narration', '')}
+> {narr}
 
-`{item.get('participant', '')}` / `{item.get('video_id', '')}` — *{mode}*
+*{html.escape(mode)}* · {has_video}
 """
 
 
@@ -368,6 +538,10 @@ parse_v2t_choice = parse_rank_choice
 
 def t2v_frames_for_item(assets: DemoAssets, item: dict) -> tuple:
     return frame_images_for_gradio(assets, item["vis_id"], 3)
+
+
+def enrich_t2v_item(assets: DemoAssets, item: dict) -> dict:
+    return {**item, "_has_video": clip_media_available(assets, item["vis_id"])}
 
 
 def v2t_choice_label(rank: int, item: dict) -> str:
@@ -393,23 +567,32 @@ def empty_t2v_outputs():
     import gradio as gr
 
     return (
-        "",
+        _status_box("Enter a preset or custom query, then Search.", "warn"),
         [],
         None,
         None,
         None,
         "Run a search to see ranked segments.",
         gr.update(choices=[], value=None),
+        "",
         None,
+        "",
     )
 
 
 def empty_v2t_outputs():
+    import gradio as gr
+
     return (
         None,
         None,
         None,
         "Loading a random kitchen clip…",
         "",
+        None,
+        "<p class='ek-hint'>Ranked captions will appear here.</p>",
+        gr.update(choices=[], value=None),
+        "",
+        [],
         "",
     )

@@ -31,6 +31,7 @@ class DemoAssets:
     narration_to_txt_id: dict[str, str]
     assets_dir: Path
     thumbnails_dir: Path | None
+    thumbnail_vis_ids: frozenset[str]
     v2t_clip_pool: list[str]
 
 
@@ -125,6 +126,7 @@ def load_assets(force_reload: bool = False) -> DemoAssets:
 
     thumbs = _resolve_dir("thumbnails")
     v2t_clip_pool = _load_v2t_clip_pool(vis_id_to_row, thumbs)
+    thumbnail_vis_ids = frozenset(v2t_clip_pool)
 
     _CACHE = DemoAssets(
         sim_mat=sim_mat,
@@ -138,6 +140,7 @@ def load_assets(force_reload: bool = False) -> DemoAssets:
         narration_to_txt_id=narration_to_txt_id,
         assets_dir=LOCAL_ASSETS_DIR,
         thumbnails_dir=thumbs,
+        thumbnail_vis_ids=thumbnail_vis_ids,
         v2t_clip_pool=v2t_clip_pool,
     )
     return _CACHE
