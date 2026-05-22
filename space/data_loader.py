@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import pickle
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,9 +34,71 @@ class DemoAssets:
     thumbnails_dir: Path | None
     thumbnail_vis_ids: frozenset[str]
     v2t_clip_pool: list[str]
+    hf_files: frozenset[str]
+    clips_on_dataset: frozenset[str]
+    thumbs_on_dataset: frozenset[str]
 
 
 _CACHE: DemoAssets | None = None
+_HF_FILES_CACHE: frozenset[str] | None = None
+_HF_FILES_CACHE_AT: float = 0.0
+_HF_FILES_REFRESH_SEC = int(os.environ.get("EK100_DEMO_MEDIA_REFRESH_SEC", "90"))
+
+
+def _list_hf_dataset_files(force: bool = False) -> frozenset[str]:
+    """Paths on the demo dataset repo (refreshed periodically as Colab uploads)."""
+    global _HF_FILES_CACHE, _HF_FILES_CACHE_AT
+    now = time.time()
+    if (
+        not force
+        and _HF_FILES_CACHE is not None
+        and now - _HF_FILES_CACHE_AT < _HF_FILES_REFRESH_SEC
+    ):
+        return _HF_FILES_CACHE
+
+    paths: set[str] = set()
+    try:
+        from huggingface_hub import HfApi
+
+        for path in HfApi().list_repo_files(HF_DATASET_REPO, repo_type="dataset"):
+            paths.add(path)
+    except Exception:
+        paths = set()
+
+    _HF_FILES_CACHE = frozenset(paths)
+    _HF_FILES_CACHE_AT = now
+    return _HF_FILES_CACHE
+
+
+def _media_sets_from_hf_files(
+    hf_files: frozenset[str], vis_id_to_row: dict[str, int]
+) -> tuple[frozenset[str], frozenset[str]]:
+    clips: set[str] = set()
+    thumbs: set[str] = set()
+    for path in hf_files:
+        if path.startswith("clips/") and path.endswith(".mp4"):
+            vid = path[len("clips/") : -4]
+            if vid in vis_id_to_row:
+                clips.add(vid)
+        elif path.startswith("thumbnails/") and path.endswith("/frame_0.jpg"):
+            parts = path.split("/")
+            if len(parts) >= 3:
+                vid = parts[1]
+                if vid in vis_id_to_row:
+                    thumbs.add(vid)
+    return frozenset(clips), frozenset(thumbs)
+
+
+def has_hf_clip(assets: DemoAssets, vis_id: str) -> bool:
+    return vis_id in assets.clips_on_dataset
+
+
+def has_hf_thumbnail(assets: DemoAssets, vis_id: str) -> bool:
+    return vis_id in assets.thumbs_on_dataset
+
+
+def has_hf_media(assets: DemoAssets, vis_id: str) -> bool:
+    return has_hf_clip(assets, vis_id) or has_hf_thumbnail(assets, vis_id)
 
 
 def _resolve(path: str, local_name: str) -> Path:
@@ -75,6 +138,30 @@ def _resolve_dir(subdir: str) -> Path | None:
 def load_assets(force_reload: bool = False) -> DemoAssets:
     global _CACHE
     if _CACHE is not None and not force_reload:
+        # Refresh HF file index so incremental Colab uploads show up without redeploy.
+        hf_files = _list_hf_dataset_files()
+        clips_on, thumbs_on = _media_sets_from_hf_files(hf_files, _CACHE.vis_id_to_row)
+        if hf_files != _CACHE.hf_files:
+            pool_json = set(_CACHE.v2t_clip_pool)
+            media_ids = clips_on | thumbs_on | pool_json
+            _CACHE = DemoAssets(
+                sim_mat=_CACHE.sim_mat,
+                vis_ids=_CACHE.vis_ids,
+                txt_ids=_CACHE.txt_ids,
+                test_df=_CACHE.test_df,
+                sentence_df=_CACHE.sentence_df,
+                video_embeds=_CACHE.video_embeds,
+                vis_id_to_row=_CACHE.vis_id_to_row,
+                txt_id_to_col=_CACHE.txt_id_to_col,
+                narration_to_txt_id=_CACHE.narration_to_txt_id,
+                assets_dir=_CACHE.assets_dir,
+                thumbnails_dir=_CACHE.thumbnails_dir,
+                thumbnail_vis_ids=media_ids,
+                v2t_clip_pool=sorted(media_ids & set(_CACHE.vis_id_to_row)),
+                hf_files=hf_files,
+                clips_on_dataset=clips_on,
+                thumbs_on_dataset=thumbs_on,
+            )
         return _CACHE
 
     pkl_path = _resolve("test.pkl", "test.pkl")
@@ -125,8 +212,14 @@ def load_assets(force_reload: bool = False) -> DemoAssets:
             video_embeds = video_embeds[idx]
 
     thumbs = _resolve_dir("thumbnails")
-    v2t_clip_pool = _load_v2t_clip_pool(vis_id_to_row, thumbs)
-    thumbnail_vis_ids = frozenset(v2t_clip_pool)
+    hf_files = _list_hf_dataset_files(force=force_reload)
+    clips_on, thumbs_on = _media_sets_from_hf_files(hf_files, vis_id_to_row)
+    pool_json = set(_load_v2t_clip_pool(vis_id_to_row, thumbs))
+    media_ids = clips_on | thumbs_on | pool_json
+    thumbnail_vis_ids = frozenset(media_ids)
+    v2t_clip_pool = sorted(
+        vid for vid in (thumbs_on | clips_on) if vid in vis_id_to_row
+    ) or sorted(media_ids)
 
     _CACHE = DemoAssets(
         sim_mat=sim_mat,
@@ -142,6 +235,9 @@ def load_assets(force_reload: bool = False) -> DemoAssets:
         thumbnails_dir=thumbs,
         thumbnail_vis_ids=thumbnail_vis_ids,
         v2t_clip_pool=v2t_clip_pool,
+        hf_files=hf_files,
+        clips_on_dataset=clips_on,
+        thumbs_on_dataset=thumbs_on,
     )
     return _CACHE
 

@@ -105,10 +105,34 @@
 }
 
 .ek-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0 0 0.85rem 0;
+  max-width: 52rem;
+}
+
+.ek-intro-lead,
+.ek-intro-line {
+  margin: 0;
   font-size: 0.9rem;
   color: var(--ek-text);
-  line-height: 1.5;
-  margin-bottom: 0.5rem;
+  line-height: 1.55;
+}
+
+.ek-intro-lead a {
+  color: var(--ek-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.ek-intro-lead a:hover {
+  text-decoration: underline;
+}
+
+.ek-intro-tab {
+  font-weight: 600;
+  color: var(--ek-text);
 }
 
 .ek-query-display,
@@ -118,8 +142,12 @@
   gap: 0.2rem;
   padding: 0.65rem 0.9rem;
   border-radius: 10px;
-  margin: 0.35rem 0 0.75rem 0;
+  margin: 0 0 0.65rem 0;
   border: 1px solid;
+}
+
+.ek-bento-panel .ek-query-display {
+  margin-top: 0;
 }
 
 .ek-query-display {

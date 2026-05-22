@@ -255,12 +255,14 @@ def load_random_v2t(current_vis_id: str | None):
 
 
 INTRO = """
-<p class="ek-intro">
-<a href="https://huggingface.co/jsurrea/avion-vitl-ek100-sms">AVION ViT-L + SMS</a>
-on EPIC-KITCHENS-100 (69.68 nDCG AVG).
-Text → Video: describe an action and browse ranked clips.
-Video → Text: watch a random clip and see predicted captions.
-</p>
+<div class="ek-intro">
+  <p class="ek-intro-lead">
+    <a href="https://huggingface.co/jsurrea/avion-vitl-ek100-sms">AVION ViT-L + SMS</a>
+    on EPIC-KITCHENS-100 (69.68 nDCG AVG).
+  </p>
+  <p class="ek-intro-line"><span class="ek-intro-tab">Text → Video</span> — describe an action and browse ranked clips.</p>
+  <p class="ek-intro-line"><span class="ek-intro-tab">Video → Text</span> — watch a random clip and see predicted captions.</p>
+</div>
 """
 
 _p0 = preset_choices()
@@ -287,7 +289,6 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
             )
             t2v_go = gr.Button("Search", variant="primary", scale=0)
 
-        t2v_status = gr.HTML()
         t2v_state = gr.State([])
         t2v_mode_state = gr.State("")
 
@@ -303,6 +304,7 @@ with gr.Blocks(title="EK-100 MIR Demo", theme=gr.themes.Soft(), css=_DEMO_CSS) a
                     t2v_f1 = gr.Image(label="Middle", height=150, interactive=False)
                     t2v_f2 = gr.Image(label="End", height=150, interactive=False)
             with gr.Column(scale=4, elem_classes=["ek-bento-panel"]):
+                t2v_status = gr.HTML()
                 gr.HTML('<p class="ek-section-title">Top segments</p>')
                 t2v_pick = gr.Radio(
                     label=None,

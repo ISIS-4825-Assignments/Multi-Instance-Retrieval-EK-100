@@ -10,7 +10,12 @@ from pathlib import Path
 import numpy as np
 
 from config import HF_DATASET_REPO, hf_clip_url, hf_thumbnail_url
-from data_loader import DemoAssets, load_assets
+from data_loader import (
+    DemoAssets,
+    has_hf_clip,
+    has_hf_thumbnail,
+    load_assets,
+)
 
 try:
     from huggingface_hub import hf_hub_download
@@ -79,14 +84,11 @@ def _placeholder_image(vis_id: str) -> np.ndarray:
 
 
 def image_for_gradio(assets: DemoAssets, vis_id: str, frame: int = 0) -> str | np.ndarray | None:
-    """
-    Value for gr.Image: local path, HF dataset file, CDN URL, or placeholder.
-    Only ~264 test segments have thumbnails on the demo dataset.
-    """
+    """Local path, HF dataset thumbnail, CDN URL, or placeholder."""
     local = _local_frame_path(assets, vis_id, frame)
     if local is not None:
         return str(local)
-    if vis_id in assets.thumbnail_vis_ids or vis_id in assets.v2t_clip_pool:
+    if has_hf_thumbnail(assets, vis_id):
         img = _fetch_image_hf(vis_id, frame)
         if img is not None:
             return img
@@ -107,12 +109,10 @@ def preview_image(assets: DemoAssets, vis_id: str) -> str | np.ndarray | None:
 
 
 def clip_media_available(assets: DemoAssets, vis_id: str) -> bool:
-    """Segment may have clips/thumbnails on the demo dataset or local assets."""
+    """True when a segment MP4 exists on the demo dataset or under local assets."""
     if vis_id not in assets.vis_id_to_row:
         return False
-    if vis_id in assets.thumbnail_vis_ids:
-        return True
-    if vis_id in assets.v2t_clip_pool:
+    if has_hf_clip(assets, vis_id):
         return True
     local = assets.assets_dir / "clips" / f"{vis_id}.mp4"
     return local.is_file() and local.stat().st_size >= 1024

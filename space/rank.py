@@ -4,22 +4,38 @@ from __future__ import annotations
 import numpy as np
 
 from config import TOP_K
-from data_loader import DemoAssets, caption_for_txt_id, load_assets, rank_from_sim_column, rank_from_sim_row
+from data_loader import (
+    DemoAssets,
+    caption_for_txt_id,
+    has_hf_clip,
+    has_hf_thumbnail,
+    load_assets,
+    rank_from_sim_column,
+    rank_from_sim_row,
+)
 
 
 def normalize_query(query: str) -> str:
     return " ".join(query.strip().lower().split())
 
 
-def _prioritize_thumbnail_pairs(
+def _prioritize_media_pairs(
     pairs: list[tuple[str, float]], assets: DemoAssets, top_k: int
 ) -> list[tuple[str, float]]:
-    """Keep true scores; surface segments that have dataset thumbnails first."""
-    if not assets.thumbnail_vis_ids:
-        return pairs[:top_k]
-    with_thumb = [p for p in pairs if p[0] in assets.thumbnail_vis_ids]
-    without = [p for p in pairs if p[0] not in assets.thumbnail_vis_ids]
-    return (with_thumb + without)[:top_k]
+    """Keep true scores; surface segments with clips, then thumbnails, on the dataset."""
+    clip_ids = {p[0] for p in pairs if has_hf_clip(assets, p[0])}
+    with_clip = [p for p in pairs if p[0] in clip_ids]
+    with_thumb = [
+        p
+        for p in pairs
+        if p[0] not in clip_ids and has_hf_thumbnail(assets, p[0])
+    ]
+    without = [
+        p
+        for p in pairs
+        if p[0] not in clip_ids and not has_hf_thumbnail(assets, p[0])
+    ]
+    return (with_clip + with_thumb + without)[:top_k]
 
 
 def find_txt_id_for_query(assets: DemoAssets, query: str) -> str | None:
@@ -46,13 +62,14 @@ def rank_text_to_video(
     txt_id = find_txt_id_for_query(assets, query)
 
     if txt_id is not None and txt_id in assets.txt_id_to_col:
-        pairs = rank_from_sim_column(assets, txt_id, top_k)
+        pairs = rank_from_sim_column(assets, txt_id, top_k * 3)
+        pairs = _prioritize_media_pairs(pairs, assets, top_k)
         mode = "benchmark caption (submission sim_mat)"
     elif text_vec is not None and assets.video_embeds is not None:
         scores = assets.video_embeds @ text_vec.astype(np.float32)
         order = np.argsort(-scores)
         pairs = [(assets.vis_ids[i], float(scores[i])) for i in order]
-        pairs = _prioritize_thumbnail_pairs(pairs, assets, top_k)
+        pairs = _prioritize_media_pairs(pairs, assets, top_k)
         mode = "free text (live encoder + precomputed video embeddings)"
     else:
         return [], "free text unavailable (upload video_embeds.npy to the demo dataset)"
