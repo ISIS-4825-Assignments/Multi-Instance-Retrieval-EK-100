@@ -438,11 +438,9 @@ def v2t_predictions_html(
 """
 
 
-def v2t_predictions_md(results: list[dict], **kwargs) -> str:
-    return v2t_predictions_html(results, **kwargs)
-
-
-segment_summary_md = v2t_clip_header_md
+def segment_summary_md(assets: DemoAssets, vis_id: str) -> str:
+    """Alias for legacy imports."""
+    return v2t_clip_meta_html(assets, vis_id)
 
 
 def t2v_choice_label(rank: int, item: dict) -> str:
